@@ -1,0 +1,51 @@
+# .coveragerc to control coverage.py
+[run]
+relative_files = True
+branch = True
+omit =
+  .tox/*
+  scripts/*
+  dev/scripts/*
+  *virtualenv/*
+  *virtualenvs/*
+  *manage.py
+  *celery.py
+  *configurator.py
+  database.py
+  *feature_flags.py
+  *probe_server.py
+  *settings.py
+  *sentry.py
+  *urls.py
+  *wsgi.py
+  */migrations/*
+  */test/*
+  *test/*
+  */tests_*.py
+  */test_*.py
+  *provider_interface.py
+  *dev_middleware.py
+  *reportdb_accessor.py
+
+[paths]
+source = koku
+
+[report]
+# Regexes for lines to exclude from consideration
+exclude_lines =
+    # Have to re-enable the standard pragma
+    pragma: no cover
+
+    # Don't complain about missing debug-only code:
+    def __repr__
+    if self\.debug
+
+    # Don't complain if tests don't hit defensive assertion code:
+    raise AssertionError
+    raise NotImplementedError
+
+    # Don't complain if non-runnable code isn't run:
+    if 0:
+    if __name__ == .__main__.:
+
+ignore_errors = True

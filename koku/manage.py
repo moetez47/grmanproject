@@ -1,0 +1,21 @@
+#!/usr/bin/env python
+import os
+import sys
+
+if __name__ == "__main__":
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "koku.settings")
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+
+    if "migrate_schemas" in sys.argv:
+        import multiprocessing
+
+        multiprocessing.set_start_method("fork")
+
+    execute_from_command_line(sys.argv)

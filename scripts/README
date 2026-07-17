@@ -1,0 +1,4 @@
+This directory holds simple scripts used for stage or production.
+
+entrypoint - contains default command used by the Dockerfile
+run_migrations - contains commands to run postgres db migrations for koku

@@ -1,0 +1,159 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# text editor temp files
+*.swp
+*.swo
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# dotenv
+.env
+.env.test
+openshift/parameters/*.env
+
+# virtualenv
+.venv
+venv/
+ENV/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+
+# Local Postgres data
+pg_data/
+pg_data.bak*/
+dev/containers/postgresql/data/
+dev/containers/postgresql/data.bak*/
+
+# static files
+koku/staticfiles/
+koku/static/
+scripts/aws_cost_usage/
+scripts/aws_pricing/
+
+# Editors
+.vscode/
+.idea/
+*.code-workspace
+
+# Mac OSX
+.DS_Store
+#pgAdmin servers.json
+pgadmin_servers.json
+
+# Testing
+testing/
+
+# Trino
+.trino/
+
+# Local OpenShift folders
+openshift.local.clusterup/
+scripts/openshift.local.clusterup/
+
+# Localdev Certs
+certs/
+
+# Bonfire configs
+dev/*.yaml
+dev/*.yml
+
+# unleash cache
+.unleash/cache/
+dev/containers/unleash/cache/
+
+# performance profiling
+/koku.iml
+/view.prof
+
+# Cursor
+.cursor/*
+!.cursor/rules/
+!.cursor/commands/
+.claude/

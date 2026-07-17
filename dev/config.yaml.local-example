@@ -1,0 +1,48 @@
+# Bonfire deployment configuration
+
+# Defines where to fetch the file that defines application configs
+appsFile:
+  host: gitlab
+  repo: insights-platform/cicd-common
+  path: bonfire_configs/ephemeral_apps.yaml
+
+# (optional) define any apps locally. An app defined here with <name> will override config for app
+# <name> in above fetched config.
+apps:
+- name: hccm
+  components:
+    - name: koku
+      host: local
+      repo: project-koku/koku
+      path: deploy/clowdapp.yaml
+      ref: <insert-commit>
+      parameters:
+        IMAGE_TAG: <insert-tag>
+        KOKU_MIN_REPLICAS: 1
+        LISTENER_MIN_REPLICAS: 1
+        MASU_MIN_REPLICAS: 1
+        SCHEDULER_MIN_REPLICAS: 1
+        SOURCES_CLIENT_MIN_REPLICAS: 1
+        SOURCES_LISTENER_MIN_REPLICAS: 1
+        WORKER_CELERY_MIN_REPLICAS: 1
+        WORKER_COST_MODEL_MIN_REPLICAS: 1
+        WORKER_DOWNLOAD_MIN_REPLICAS: 1
+        WORKER_OCP_MIN_REPLICAS: 1
+        WORKER_PRIORITY_MIN_REPLICAS: 1
+        WORKER_REFRESH_MIN_REPLICAS: 1
+        WORKER_SUMMARY_MIN_REPLICAS: 1
+        WORKER_HCS_MIN_REPLICAS: 1
+        TRINO_PORT: 8000
+        TRINO_HOST: trino-coordinator
+        S3_BUCKET_NAME: hccm-eph-s3
+
+    - name: trino
+      host: github
+      repo: redhatinsights/ubi-trino
+      path: deploy/clowdapp.yaml
+      ref: main
+      parameters:
+        IMAGE_TAG: 405-002
+        S3_BUCKET_NAME: hccm-eph-s3
+        S3_SSE_ENABLED: false
+        S3_SELECT_PUSHDOWN_ENABLED: false

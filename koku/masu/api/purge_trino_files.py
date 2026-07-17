@@ -1,0 +1,224 @@
+#
+# Copyright 2022 Red Hat Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+"""View for removing parquet & csv files for a particular provider."""
+import logging
+
+from django.views.decorators.cache import never_cache
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.decorators import permission_classes
+from rest_framework.decorators import renderer_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.settings import api_settings
+
+from api.provider.models import Provider
+from api.utils import DateHelper
+from masu.celery.tasks import purge_manifest_records
+from masu.celery.tasks import purge_s3_files
+from masu.config import Config
+from masu.processor.parquet.parquet_report_processor import ParquetReportProcessor
+from masu.util.common import get_path_prefix
+
+LOG = logging.getLogger(__name__)
+
+OCP_REPORT_TYPES = ["pod_usage", "storage_usage", "node_labels", "namespace_labels", "vm_usage", "gpu_usage"]
+
+
+def _build_ocp_paths_for_date_range(schema, provider_type, provider_uuid, dates):
+    """Build S3 paths for OCP provider with specific date range."""
+    s3_csv_path = []
+    s3_parquet_path = []
+    s3_daily_parquet_path = []
+    s3_daily_openshift_path = []
+
+    for date in dates:
+        # CSV files are report-type and day-specific (e.g. pod_usage.2026-03-05.*.csv).
+        # Build prefixes that target only the requested day range.
+        csv_path = get_path_prefix(schema, provider_type, provider_uuid, date, Config.CSV_DATA_TYPE)
+        for report_type in OCP_REPORT_TYPES:
+            s3_csv_path.append(f"{csv_path}/{report_type}.{date}")
+
+        # Parquet paths for each report type
+        for report_type in OCP_REPORT_TYPES:
+            # Hourly parquet
+            parquet_path = get_path_prefix(
+                schema, provider_type, provider_uuid, date, Config.PARQUET_DATA_TYPE, report_type=report_type
+            )
+            s3_parquet_path.append(parquet_path + f"/{report_type}.{date}")
+
+            # Daily parquet
+            daily_parquet_path = get_path_prefix(
+                schema,
+                provider_type,
+                provider_uuid,
+                date,
+                Config.PARQUET_DATA_TYPE,
+                report_type=report_type,
+                daily=True,
+            )
+            s3_daily_parquet_path.append(daily_parquet_path + f"/{report_type}.{date}")
+
+        # OCP on cloud path
+        ocp_cloud_path = get_path_prefix(
+            schema,
+            provider_type,
+            provider_uuid,
+            date,
+            Config.PARQUET_DATA_TYPE,
+            report_type="openshift",
+            daily=True,
+        )
+        s3_daily_openshift_path.append(ocp_cloud_path + f"/openshift.{date}")
+
+    return s3_csv_path, s3_parquet_path, s3_daily_parquet_path, s3_daily_openshift_path
+
+
+# WARNING ONLY MANUALLY TESTED FOR GCP AT THE MOMENT
+@never_cache
+@api_view(http_method_names=["GET", "DELETE"])
+@permission_classes((AllowAny,))
+@renderer_classes(tuple(api_settings.DEFAULT_RENDERER_CLASSES))
+def purge_trino_files(request):  # noqa: C901
+    """
+    This endpoint deletes the parquet & csv files in s3.
+    Required Params:
+        provider_uuid - source_uuid
+        schema - account schema
+        bill_date - usually start of the billing month (yyyy-mm-dd)
+    Optional Params (required for OCP):
+        start_date - purge range start (yyyy-mm-dd)
+        end_date - purge range end (yyyy-mm-dd)
+        ignore_manifest - skip manifest deletion when present
+    """
+    # Parameter Validation
+    params = request.query_params
+    simulate = True
+    delete_manifest = False
+    if request.method == "DELETE":
+        simulate = False
+        delete_manifest = True
+    if not params:
+        errmsg = "Parameter missing. Required: provider_uuid, schema, bill date"
+        return Response({"Error": errmsg}, status=status.HTTP_400_BAD_REQUEST)
+    provider_uuid = params.get("provider_uuid")
+    provider = Provider.objects.filter(uuid=provider_uuid).first()
+    if not provider:
+        errmsg = f"The provider_uuid {provider_uuid} does not exist."
+        return Response({"Error": errmsg}, status=status.HTTP_400_BAD_REQUEST)
+
+    provider_type = provider.type
+    schema = params.get("schema")
+    if not schema:
+        errmsg = "Parameter missing. Required: schema"
+        return Response({"Error": errmsg}, status=status.HTTP_400_BAD_REQUEST)
+
+    # TODO: make sure the bill date comes in the yyyy-mm-dd format
+    bill_date = params.get("bill_date")
+    if not bill_date:
+        errmsg = "Parameter missing. Required: bill_date"
+        return Response({"Error": errmsg}, status=status.HTTP_400_BAD_REQUEST)
+
+    start_date = params.get("start_date")
+    end_date = params.get("end_date")
+
+    if provider_type == Provider.PROVIDER_OCP and (not start_date or not end_date):
+        errmsg = "OCP purge requires start_date and end_date parameters."
+        return Response({"Error": errmsg}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not end_date:
+        end_date = start_date
+    if "ignore_manifest" in params.keys():
+        delete_manifest = False
+
+    # Build S3 paths
+    s3_csv_path = []
+    s3_parquet_path = []
+    s3_daily_parquet_path = []
+    s3_daily_openshift_path = []
+
+    # Convert date strings to date objects
+    date_helper = DateHelper()
+
+    if start_date and end_date:
+        invoice_month = str(date_helper.invoice_month_from_bill_date(bill_date))
+        dates = date_helper.list_days(start_date, end_date)
+
+        if provider_type == Provider.PROVIDER_OCP:
+            (
+                s3_csv_path,
+                s3_parquet_path,
+                s3_daily_parquet_path,
+                s3_daily_openshift_path,
+            ) = _build_ocp_paths_for_date_range(schema, provider_type, provider_uuid, dates)
+        else:
+            # Non-OCP providers (GCP, AWS, Azure)
+            pq_processor_object = ParquetReportProcessor(
+                schema_name=schema,
+                report_path="",
+                provider_uuid=provider_uuid,
+                provider_type=provider_type,
+                manifest_id=None,
+                context={"start_date": bill_date},
+            )
+
+            for date in dates:
+                if provider_type in [Provider.PROVIDER_GCP, Provider.PROVIDER_GCP_LOCAL]:
+                    path = f"/{invoice_month}_{date}"
+                else:
+                    path = f"/{date}"
+                s3_csv_path.append(pq_processor_object.csv_path_s3 + path)
+                s3_parquet_path.append(pq_processor_object.parquet_path_s3 + path)
+                s3_daily_parquet_path.append(pq_processor_object.parquet_daily_path_s3 + path)
+                s3_daily_openshift_path.append(pq_processor_object.parquet_ocp_on_cloud_path_s3 + path)
+    else:
+        # No date range specified, purge entire bill month (non-OCP only; OCP rejected above)
+        pq_processor_object = ParquetReportProcessor(
+            schema_name=schema,
+            report_path="",
+            provider_uuid=provider_uuid,
+            provider_type=provider_type,
+            manifest_id=None,
+            context={"start_date": bill_date},
+        )
+        s3_csv_path = [pq_processor_object.csv_path_s3]
+        s3_parquet_path = [pq_processor_object.parquet_path_s3]
+        s3_daily_parquet_path = [pq_processor_object.parquet_daily_path_s3]
+        s3_daily_openshift_path = [pq_processor_object.parquet_ocp_on_cloud_path_s3]
+
+    path_info = {
+        "s3_csv_path": s3_csv_path,
+        "s3_parquet_path": s3_parquet_path,
+        "s3_daily_parquet_path": s3_daily_parquet_path,
+        "s3_daily_openshift_path": s3_daily_openshift_path,
+    }
+    log_msg = f"""
+        Purge Parameters:
+            schema: {schema}
+            bill_date: {bill_date}
+            provider_type: {provider_type}
+            provider_uuid: {provider_uuid}
+            simulate: {simulate}
+            start_date: {start_date}
+            end_date: {end_date}
+        """
+    LOG.info(log_msg)
+    if simulate:
+        return Response(path_info)
+
+    async_results = {}
+    for _, file_prefix_list in path_info.items():
+        for file_prefix in file_prefix_list:
+            async_purge_result = purge_s3_files.delay(
+                provider_uuid=provider_uuid, provider_type=provider_type, schema_name=schema, prefix=file_prefix
+            )
+            async_results[str(async_purge_result)] = file_prefix
+
+    if delete_manifest:
+        dates = {"start_date": start_date, "end_date": end_date, "bill_date": bill_date}
+        purge_manifest_result = purge_manifest_records.delay(schema, provider_uuid, dates)
+        async_results["manifest_delete"] = str(purge_manifest_result)
+
+    return Response(async_results)

@@ -1,0 +1,192 @@
+#
+# Copyright 2021 Red Hat Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+"""Test the trino_query endpoint view."""
+from unittest.mock import MagicMock
+from unittest.mock import patch
+from urllib.parse import urlencode
+
+from django.test.utils import override_settings
+from django.urls import reverse
+
+from masu.test import MasuTestCase
+
+
+@override_settings(ROOT_URLCONF="masu.urls")
+class TrinoQueryTest(MasuTestCase):
+    """Test Cases for the trino_query endpoint."""
+
+    @patch("koku.middleware.MASU", return_value=True)
+    def test_trino_query_no_query(self, _):
+        """Test the GET trino/query endpoint with no query."""
+        data = {"schema": "org1234567"}
+
+        expected = {"Error": "Must provide a query key to run."}
+        response = self.client.post(reverse("trino_query"), data=data)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), expected)
+
+    @patch("koku.middleware.MASU", return_value=True)
+    def test_trino_query_no_schema(self, _):
+        """Test the GET trino/query endpoint with no schema."""
+        data = {"query": "select 1"}
+
+        expected = {"Error": "Must provide a schema key to run."}
+        response = self.client.post(reverse("trino_query"), data=data)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), expected)
+
+    @patch("koku.middleware.MASU", return_value=True)
+    def test_trino_query_dissallowed_query(self, _):
+        """Test the GET trino/query endpoint with bad queries."""
+        dissallowed_keywords = ["delete", "insert", "update", "alter", "create", "drop", "grant"]
+        for keyword in dissallowed_keywords:
+            data = {"query": f"{keyword}", "schema": "org1234567"}
+            expected = {"Error": f"This endpoint does not allow a {keyword} operation to be performed."}
+            response = self.client.post(reverse("trino_query"), data=data)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), expected)
+
+    @patch("trino.dbapi.connect")
+    @patch("koku.middleware.MASU", return_value=True)
+    def test_trino_query_allowed_queries(self, _, mock_connect):
+        """Test the GET trino/query endpoint with allowed queries."""
+        # Setup mock cursor
+        mock_cursor = MagicMock()
+        mock_cursor.description = [("col1",), ("col2",)]
+        mock_cursor.fetchall.return_value = [("val1", "val2")]
+        mock_connect.return_value.__enter__.return_value.cursor.return_value = mock_cursor
+
+        test_queries = [
+            "SELECT * FROM openshift_pod_usage_line_items",
+            "SELECT DISTINCT json_extract_scalar(json_parse(persistentvolumeclaim_labels), '$.kubevirt_io_created_by')",
+            "SELECT json_extract_scalar(json_parse(random_labels), '$.delete')",
+            "WITH cte AS (SELECT * FROM gcp_line_items) SELECT * FROM cte",
+            "SHOW TABLES",
+            "DESCRIBE openshift_storage_usage_line_items",
+            "SELECT 1",
+        ]
+
+        for query in test_queries:
+            with self.subTest(params=query):
+                data = {"query": query, "schema": "org1234567"}
+                response = self.client.post(reverse("trino_query"), data=data)
+                self.assertEqual(response.status_code, 200)
+
+
+@override_settings(ROOT_URLCONF="masu.urls")
+class TrinoUITest(MasuTestCase):
+    """Test Cases for the trino_ui endpoint."""
+
+    @patch("koku.middleware.MASU", return_value=True)
+    @patch("masu.api.trino.requests")
+    def test_trino_ui_with_api_service(self, mock_requests, _):
+        """Test the GET trino_ui endpoint."""
+        valid_api_services = ["query", "stats", "cluster"]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_requests.get.return_value = mock_response
+        for service in valid_api_services:
+            params = {"api_service": service}
+            url = f"{reverse('trino_ui')}?{urlencode(params)}"
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, mock_response.status_code)
+            self.assertIsInstance(response.data, dict)
+            self.assertEqual(response.data.get("api_service_name"), service)
+
+    @patch("koku.middleware.MASU", return_value=True)
+    @patch("masu.api.trino.requests")
+    def test_trino_ui_query_service_with_query_id_filter(self, mock_requests, _):
+        """Test GET trino_ui endpoint query_id filtering for query service."""
+        query_id = "20260623_205832_82190_3bma3"
+        trino_queries = [
+            {"queryId": "20260623_200000_00000_aaaaa", "state": "FINISHED"},
+            {"queryId": query_id, "state": "FAILED"},
+        ]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = trino_queries
+        mock_requests.get.return_value = mock_response
+
+        params = {"api_service": "query", "query_id": query_id}
+        url = f"{reverse('trino_ui')}?{urlencode(params)}"
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, mock_response.status_code)
+        self.assertEqual(response.data.get("api_service_name"), "query")
+        self.assertEqual(response.data.get("trino_response"), [{"queryId": query_id, "state": "FAILED"}])
+
+    @patch("koku.middleware.MASU", return_value=True)
+    @patch("masu.api.trino.requests")
+    def test_trino_ui_query_service_with_query_id_filter_matrix(self, mock_requests, _):
+        """Test GET trino_ui query_id filtering matrix for different response shapes."""
+        query_id = "20260623_205832_82190_3bma3"
+        test_matrix = [
+            {
+                "name": "dict_with_queries_key",
+                "trino_response": {
+                    "nextUri": "http://trino/v1/query/next",
+                    "queries": [
+                        {"queryId": "different_query_id", "state": "RUNNING"},
+                        {"queryId": query_id, "state": "FAILED"},
+                    ],
+                },
+                "expected_response": {
+                    "nextUri": "http://trino/v1/query/next",
+                    "queries": [{"queryId": query_id, "state": "FAILED"}],
+                },
+            },
+            {
+                "name": "dict_single_match",
+                "trino_response": {"queryId": query_id, "state": "FAILED"},
+                "expected_response": {"queryId": query_id, "state": "FAILED"},
+            },
+            {
+                "name": "dict_single_no_match",
+                "trino_response": {"queryId": "different_query_id", "state": "RUNNING"},
+                "expected_response": {},
+            },
+            {
+                "name": "preserves_non_query_dict",
+                "trino_response": {"error": "Trino unavailable"},
+                "expected_response": {"error": "Trino unavailable"},
+            },
+            {
+                "name": "non_dict_or_list_response",
+                "trino_response": "trino_unexpected_response",
+                "expected_response": "trino_unexpected_response",
+            },
+        ]
+
+        for case in test_matrix:
+            with self.subTest(case=case["name"]):
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = case["trino_response"]
+                mock_requests.get.return_value = mock_response
+
+                params = {"api_service": "query", "query_id": query_id}
+                url = f"{reverse('trino_ui')}?{urlencode(params)}"
+                response = self.client.get(url)
+
+                self.assertEqual(response.status_code, mock_response.status_code)
+                self.assertEqual(response.data.get("trino_response"), case["expected_response"])
+
+    @patch("koku.middleware.MASU", return_value=True)
+    @patch("masu.api.trino.requests")
+    def test_trino_ui_invalid_or_no_api_service(self, mock_requests, _):
+        """Test the GET trino_ui endpoint with no api service parameter."""
+        invalid_api_services = ["invalid", "", "random", "test"]
+        expected = {"Error": "Must provide a valid parameter and trino-ui api service."}
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {}
+        mock_requests.get.return_value = mock_response
+        for service in invalid_api_services:
+            params = {"api_service": service}
+            url = f"{reverse('trino_ui')}?{urlencode(params)}"
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, mock_response.status_code)
+            self.assertEqual(response.json(), expected)

@@ -1,0 +1,124 @@
+resources:
+- base/base.yaml
+
+patches:
+- path: patches/koku-reads.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/koku-writes.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/nginx.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/listener.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/masu.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/scheduler.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/sources-client.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/sources-listener.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-celery.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-cost-model.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-cost-model-xl.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-cost-model-penalty.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-download.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-download-xl.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-download-penalty.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-ocp.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-ocp-xl.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-ocp-penalty.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-priority.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-priority-xl.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-priority-penalty.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-refresh.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-refresh-xl.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-refresh-penalty.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-summary.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-summary-xl.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-summary-penalty.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-hcs.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-subs-extraction.yaml
+  target:
+    version: v1
+    kind: Template
+- path: patches/worker-subs-transmission.yaml
+  target:
+    version: v1
+    kind: Template

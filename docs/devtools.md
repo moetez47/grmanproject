@@ -1,0 +1,379 @@
+# Developer Tools
+
+This section describes tooling and features included in Koku to assist developers contributing to Koku.
+
+## Environment Variables
+
+Koku makes use of environment variables to configure features and application capabilities.
+
+In the repository, there is an `.env.example` file with sample environment settings. The `.env` file is used by Django's tools as well as Koku's scripting. It is the recommended way to configure your local development environment settings.
+
+This section documents environment variables that may be of interest to developers.
+
+`DEVELOPMENT=(True|False)` - Enables development features. Not for
+production use. `DEVELOPMENT_IDENTITY=(JSON)` - A JSON Object
+representing a User
+
+## Authentication
+
+When `DEVELOPMENT` is not set, Koku expects to use an external service to handle authentication and access control for most API endpoints.
+
+When `DEVELOPMENT` is set, the development middleware is enabled. This allows passing in custom identity information into Koku for development and testing purposes using the `DEVELOPMENT_IDENTITY` variable.
+
+Example `DEVELOPMENT_IDENTITY` object:
+
+```json
+{
+    "identity": {
+        "account_number": "10001",
+        "type": "User",
+        "user": {
+            "username": "user_dev",
+            "email": "user_dev@foo.com",
+            "is_org_admin": False
+            "access": {
+                "aws.account": {
+                    "read": ["1234567890AB", "234567890AB1"]
+                }
+                "gcp.account": {
+                    "read": ["*"]
+                }
+                "gcp.project": {
+                    "read": ["*"]
+                }
+                "azure.subscription_guid": {
+                    "read": ["*"]
+                }
+                "openshift.cluster": {
+                    "read": ["*"]
+                }
+                "openshift.project": {
+                    "read": ["*"]
+                }
+                "openshift.node": {
+                    "read": ["*"]
+                }
+            }
+        },
+    },
+    "entitlements": {"cost_management": {"is_entitled": True}},
+}
+```
+
+> **Note:**
+> This example is pretty-printed for readability. When setting the
+> enviroment variable, it should be collapsed to one single line.
+
+## Trino Tips
+
+Trino is an SQL query engine, but not an SQL database. What does that mean? Traditional databases typically consist of a query engine and a storage engine. Trino is just a query engine and does not store data. Inside of koku, our download workers will retrieve cost data from the cloud providers in the form of CSVs. During processing we convert these csv files to parquet files (Look for the following function in the codebase: `convert_csv_to_parquet`).
+
+After the files are converted they are then sent up to an S3 bucket. During runtime the Trino coordinator utilizes the existing HIVE metastore metadata and files residing in storage to query the files for data.
+
+Trino Specific Env Vars
+```
+S3_BUCKET_NAME=koku-bucket
+S4_PROXY_ENDPOINT=http://koku-s4-proxy:7480
+S3_ENDPOINT=http://localhost:9000
+S3_ACCESS_KEY=s4admin
+S3_SECRET=s4secret
+TRINO_DATE_STEP=31
+```
+
+Additional Reads:
+
+- https://trino.io/blog/2020/10/20/intro-to-hive-connector.html#trino-runtime-replaces-hive-runtime
+
+## Trino Migrations
+Koku utilize two different table types within Trino, *external tables* and *managed tables*.  Understanding the difference between these two table types is essential to understanding how to migrate them.
+
+### External Tables:
+
+An external table is a table that is stored externally. These tables point towards an external location in S3 or Mino (locally). The Hive metastore only contains the metadata schema so that it knows where to look during a query.
+
+* External tables are identifiable in trino by using the `SHOW CREATE TABLE <table_name>` command. The external tables will have an `external_location` like this:
+
+```
+    SHOW CREATE TABLE aws_line_items;
+    ...
+    WITH (
+        external_location = 's3a://koku-bucket/data/parquet/org1234567/AWS',
+        format = 'PARQUET',
+        partitioned_by = ARRAY['source','year','month']
+    )
+```
+
+*Migration Considerations*
+1. Since the data is externally located, dropping these tables will not result in data loss. Dropping the table will force the hive metastore to refresh the metadata schema picking up any changes.
+
+### Managed Tables:
+Managed tables ARE NOT stored externally, and Hive assumes it owns the data for the managed table. The managed tables can be identified with the same `SHOW CREATE TABLE <table_name>` command.
+
+ ```
+    SHOW CREATE TABLE reporting_ocpawscostlineitem_project_daily_summary;
+    ...
+    WITH (
+        format = 'PARQUET',
+        partitioned_by = ARRAY['aws_source','ocp_source','year','month','day']
+    )
+```
+
+Notice how an `external_location` is not present in the return. That means the hive metastore assumes it owns that information.
+
+*Migration Considerations*
+1. Changes to these tables should always come in the form of adding or dropping a column.
+2. Dropping these tables would result in DATA LOSS, therefore the `migrate_trino.py` script will not allow you to drop managed tables.
+
+### Our migration script.
+
+Our Trino migrations are run using the `migrate_trino.py` script, and this script contains checks and balances regarding managed and external tables. Therefore, when new trino tables are added to the project, the corresponding list of external vs managed tables should be updated with the new table name.
+
+**S4 path proxy:** When you add or rename a Hive **managed** table (entries in `MANAGED_TABLES` inside `migrate_trino_tables.py`), also add the table name to `dev/containers/s4-path-proxy/path_maps.yaml` under `tables` with the next unused numeric id. The proxy shortens `data/<schema>.db/<table>/…` object keys so Ceph flat filenames stay within the 255-character limit. See [S4 path proxy](#s4-path-proxy) below.
+
+
+## S4 (local S3 object storage)
+
+S4 is the file storage location we use locally. Since we query the parquet files based off the S3 path, we use this tool locally to see the csv & parquet files are in their expected place. It will also allow you to download them.
+
+S4 web UI:
+
+- http://127.0.0.1:5002/
+
+The username & password is set inside of the `.env` file
+```
+S3_ACCESS_KEY=s4admin
+S3_SECRET=s4secret
+```
+
+S3 API endpoint (host): `http://localhost:9000` (S4 path proxy, mapped from container port 7480).
+
+Direct S4 backend (short on-disk paths, debugging only): `http://localhost:9001`.
+
+### S4 path proxy
+
+Local S4 (Ceph RGW) stores each object key as a **single flat filename**. Long Hive warehouse paths from Trino (for example `data/org1234567.db/managed_azure_openshift_daily_temp/source=…/ocp_source=…/year=…/day=…/<file>`) can exceed the 255-character limit and fail with “file name too long.”
+
+The **s4-path-proxy** service sits in front of S4 and is transparent to Koku and Trino:
+
+- Clients always use the **logical** long paths (unchanged SQL, Hive metastore, and application code).
+- The proxy rewrites keys to **short numeric segments** on `PUT`/`GET`/`LIST`/`DELETE` before they reach S4.
+
+Configuration: [`dev/containers/s4-path-proxy/path_maps.yaml`](../dev/containers/s4-path-proxy/path_maps.yaml)
+
+| Map | Example logical | Stored on S4 |
+|-----|-----------------|--------------|
+| `schema_paths` | `data/org1234567.db` | `1` |
+| `schema_path_pattern` | `data/org7654321.db` | `o7654321` |
+| `tables` | `managed_aws_openshift_daily_temp` | `1` (segment after schema) |
+
+**When to update the map**
+
+1. Adding a Hive managed table → add to `MANAGED_TABLES` in `migrate_trino_tables.py` **and** `tables` in `path_maps.yaml`.
+2. Adding a dev/test schema warehouse path → add under `schema_paths` (or rely on `schema_path_pattern` for `data/org<digits>.db`).
+
+**Tests**
+
+```bash
+# Unit tests run during image build (docker compose build s4-path-proxy).
+# To run them locally without rebuilding:
+cd dev/containers/s4-path-proxy && pip install -r requirements.txt && pytest -q
+
+# Integration (proxy + S4 running)
+docker compose up -d s4 s4-path-proxy
+./dev/scripts/s3_smoke_test.sh
+./dev/scripts/s4_long_key_test.sh
+```
+
+The S4 web UI shows **physical** (short) paths on disk, not the logical paths Trino uses.
+
+**OCP-cloud local test:** Start the Trino stack (`make docker-up-min-trino-no-build`), ingest AWS/Azure/GCP local provider data, and trigger download/summarization for an OCP-on-cloud provider pair. Watch `koku-worker` and `trino` logs for S3 write errors.
+
+## Trino Coordinator
+
+This is the brain of the Trino installation and the node the client connects to when submitting statements for execution. The coordinator keeps track of the activity on each worker and coordinates the execution of a query.The coordinator creates a logical model of a query involving a series of stages, which is then translated into a series of connected tasks running on a cluster of Trino workers.
+
+You can use the trino UI to see the queries run in trino:
+- http://127.0.0.1:8080/ui/
+
+You can also manually run queries inside of the trino container
+```
+docker exec -it trino trino --catalog hive --schema org1234567 --user admin --debug
+SHOW CREATE TABLE <table_name>;
+```
+
+Additional Reads:
+
+- https://trino.io/docs/current/overview/concepts.html#coordinator
+
+
+## PostgreSQL Tips:
+
+**Connect to PostgreSQL**
+```
+PGPASSWORD=postgres psql postgres -U postgres -h localhost -p 15432
+```
+
+Another alternative is to configure a [connection service file](https://www.postgresql.org/docs/current/libpq-pgservice.html).
+
+Example `~/.pg_service.conf`:
+```
+[koku_db]
+host=localhost
+dbname=postgres
+port=5432
+user=postgres
+password=postgres
+```
+
+You can then connect through setting the `PGSERVICE` variable:
+```
+PGSERVICE=koku_db psql
+```
+
+
+**Commonly used psql commands**
+
+1. Set search Schema: `SET search_path TO org1234567`
+2. find datatable: `\dt` or `\dt reporting_ocpgcp*`
+3. Tidy up display: `\x auto`
+4. List columns for a table: `\d+ reporting_ocpusagelineitem_daily_summary`
+
+**Commonly used SQL pieces**
+
+Search for Tag Key
+```
+WHERE pod_labels ? 'environment';
+```
+
+**Extensions**
+
+We use PostgreSQL's [uuid-ossp extension](https://www.postgresql.org/docs/current/uuid-ossp.html) to generate uuids. However, this extension is not enabled by default when connecting through a terminal. If you ever need the extension locally, it can can be enabled with the following command:
+
+```
+ALTER EXTENSION "uuid-ossp" SET SCHEMA org1234567;
+```
+
+Example:
+```
+postgres=# SELECT uuid_generate_v4();
+           uuid_generate_v4
+--------------------------------------
+ cde6c80d-ac41-42a2-b1db-bf941db2b7c8
+```
+
+
+## Jinja Templated SQL
+
+We have a development script that will replace the Jinja variables inside of a template file.
+
+Example
+```
+python3 dev/scripts/render_templated_sql.py -f /path/to/template.sql -b 11
+```
+
+## Debugging Django ORM
+
+The following code snippit will provide you with queries generated by Django that are able to be copy and pasted into PostgreSQL.
+
+```
+from django.db import connection
+readable_queries = []
+for dikt in connection.queries:
+    for key, item in dikt.items():
+        item = item.replace("\"", "")
+        item = item.replace("\\", "")
+        readable_queries.append({key: item})
+LOG.info(readable_queries)
+```
+
+If you are debugging queries generated for the report endpoints, a good place to put this code is in the `ReportView` class since it is the parent class for all the views.
+
+## How to check Redis Keys
+
+```
+docker exec -it koku_redis redis-cli
+127.0.0.1:6379> select 1
+OK
+127.0.0.1:6379[1]> keys *
+```
+
+Additionally, [here is a small example](https://github.com/project-koku/koku/pull/4105) of how to test Redis cache changes.
+
+
+## Unleash ##
+
+The default credentials for Unleash are:
+
+```
+username: admin
+password: unleash4all
+```
+
+## Add environement variable to clowder ##
+
+1. Add the variable to the necessary [kustomize/patches](https://github.com/project-koku/koku/tree/main/deploy/kustomize/patches) yaml files.
+
+```
+- name: TAG_ENABLED_LIMIT
+  value: ${TAG_ENABLED_LIMIT}
+```
+
+2. Then add the variable to the `parameters:` list in the [base.yaml](https://github.com/project-koku/koku/blob/main/deploy/kustomize/base/base.yaml) file.
+
+```
+- displayName: Enable Tags Limit
+  name: TAG_ENABLED_LIMIT
+  value: "200"
+```
+
+3. Run the `make clowdapp` command to generate the main `clowdapp.yaml` file.
+
+Example:
+- https://github.com/project-koku/koku/pull/4551/files
+
+
+## Checking data integrity between Trino and Postgres ##
+
+This is a small script to iterate over schema and validate any data in Trino also exists in Postgres summary tables.
+
+Examples commands and results:
+
+
+1. This `python ./dev/scripts/data_integrity.py -g "gabi_url" -u "trino-url" -t "my-token" -c "my.cert" -k "my.key" -s "2023-11-07" -e "2023-11-08" -l` will return a list of all active Postgres Schema's
+
+```
+["schema1", "schema2", "schema3"]
+```
+
+2. This `python ./dev/scripts/data_integrity.py -g "gabi_url" -u "trino-url" -t "my-token" -c "my.cert" -k "my.key" -s "2023-11-07" -e "2023-11-08"` will return the following snippet stating if there is complete data or any tables with missing data for particular days.
+
+```
+{'schema1': {'PG': {'reporting_awscostentrylineitem_daily_summary': 'All data complete for table: reporting_awscostentrylineitem_daily_summary'}, 'TRINO': 'PG data complete so skipping trino query'}},
+{'schema2': {'PG': {"reporting_awscostentrylineitem_daily_summary": "Missing data in reporting_awscostentrylineitem_daily_summary for days: ['2023-10-26', '2023-10-27', '2023-10-28', '2023-10-29', '2023-10-30', '2023-10-31']"}, 'TRINO': {"aws_line_items": "All data complete for table: aws_line_items"}}, 'schema3': {'PG': {'reporting_awscostentrylineitem_daily_summary': 'All data complete for table: reporting_awscostentrylineitem_daily_summary'}, 'TRINO': 'PG data complete so skipping trino query'}}
+```
+
+
+3. This `python ./dev/scripts/data_integrity.py -g "gabi_url" -u "trino-url" -t "my-token" -c "my.cert" -k "my.key" -s "2023-11-07" -e "2023-11-08" -x "schema1" "schema3"` will return similar to above but run for specific schema
+
+```
+'schema1': {'PG': {'reporting_awscostentrylineitem_daily_summary': 'All data complete for table: reporting_awscostentrylineitem_daily_summary'}, 'TRINO': 'PG data complete so skipping trino query'}},
+'schema3': {'PG': {'reporting_awscostentrylineitem_daily_summary': 'All data complete for table: reporting_awscostentrylineitem_daily_summary'}, 'TRINO': 'PG data complete so skipping trino query'}}
+```
+
+## Monitoring Celery ##
+
+[Flower] is a tool for monitoring Celery clusters. It provides detailed information about the status of workers and tasks.
+
+Flower is installed with the dev dependencies but it is not run by default. To start Flower, run
+
+```
+celery -A koku flower
+```
+
+Open http://localhost:5555 to see Celery details.
+
+See the [Flower documentation][flower] for detailed usage information.
+
+
+
+[flower]: https://flower.readthedocs.io/en/latest/index.html

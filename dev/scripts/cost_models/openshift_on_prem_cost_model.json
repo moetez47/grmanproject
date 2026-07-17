@@ -1,0 +1,340 @@
+{
+    "name": "Cost Management OpenShift Cost Model",
+    "description": "A cost model of on-premises OpenShift clusters.",
+    "source_type": "OCP",
+    "source_uuids": [
+        "PROVIDER_UUID"
+    ],
+    "distribution": "cpu",
+    "distribution_info": {
+        "distribution_type": "cpu",
+        "platform_cost": true,
+        "worker_cost": true,
+        "network_unattributed": true,
+        "storage_unattributed": true,
+        "gpu_unallocated": true
+    },
+    "rates": [
+        {
+            "metric": {
+                "name": "cpu_core_usage_per_hour"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.007,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "cpu_core_request_per_hour"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.2,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "memory_gb_usage_per_hour"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.009,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "memory_gb_request_per_hour"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.05,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "storage_gb_usage_per_month"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.01,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "storage_gb_request_per_month"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.01,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "node_cost_per_month"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 1000,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "node_cost_per_month"
+            },
+            "tag_rates": {
+                "tag_key": "instance-type",
+                "tag_values": [
+                    {
+                        "unit": "USD",
+                        "value": 310,
+                        "default": false,
+                        "tag_value": "small",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 620,
+                        "default": false,
+                        "tag_value": "medium",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 930,
+                        "default": true,
+                        "tag_value": "large",
+                        "description": ""
+                    }
+                ]
+            },
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "cluster_cost_per_month"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 10000,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "pvc_cost_per_month"
+            },
+            "tag_rates": {
+                "tag_key": "storageclass",
+                "tag_values": [
+                    {
+                        "unit": "USD",
+                        "value": 93,
+                        "default": false,
+                        "tag_value": "gold",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 62,
+                        "default": false,
+                        "tag_value": "silver",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 31,
+                        "default": true,
+                        "tag_value": "bronze",
+                        "description": ""
+                    }
+                ]
+            },
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "cpu_core_effective_usage_per_hour"
+            },
+            "tag_rates": {
+                "tag_key": "application",
+                "tag_values": [
+                    {
+                        "unit": "USD",
+                        "value": 0.05,
+                        "default": false,
+                        "tag_value": "OpenCart",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 0.1,
+                        "default": false,
+                        "tag_value": "Phoenix",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 0.25,
+                        "default": true,
+                        "tag_value": "Atomic",
+                        "description": ""
+                    }
+                ]
+            },
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "vm_cost_per_month"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.5,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "vm_cost_per_hour"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 0.007,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Supplementary"
+        },
+        {
+            "metric": {
+                "name": "cluster_cost_per_hour"
+            },
+            "tiered_rates": [
+                {
+                    "unit": "USD",
+                    "value": 3.45,
+                    "usage_start": null,
+                    "usage_end": null
+                }
+            ],
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "project_per_month"
+            },
+            "tag_rates": {
+                "tag_key": "cats",
+                "tag_values": [
+                    {
+                        "unit": "USD",
+                        "value": 50,
+                        "default": false,
+                        "tag_value": "nilla",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 100,
+                        "default": false,
+                        "tag_value": "sushi",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 25,
+                        "default": true,
+                        "tag_value": "fries",
+                        "description": ""
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 5,
+                        "default": false,
+                        "tag_value": "cinnamon",
+                        "description": ""
+                    }
+                ]
+            },
+            "cost_type": "Infrastructure"
+        },
+        {
+            "metric": {
+                "name": "gpu_cost_per_month"
+            },
+            "tag_rates": {
+                "tag_key": "nvidia",
+                "tag_values": [
+                    {
+                        "unit": "USD",
+                        "value": 1000,
+                        "default": false,
+                        "tag_value": "Tesla T4",
+                        "description": "NVIDIA Tesla T4"
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 2500,
+                        "default": false,
+                        "tag_value": "A100",
+                        "description": "NVIDIA A100"
+                    },
+                    {
+                        "unit": "USD",
+                        "value": 5000,
+                        "default": true,
+                        "tag_value": "H100",
+                        "description": "NVIDIA H100"
+                    }
+                ]
+            },
+            "cost_type": "Infrastructure"
+        }
+    ]
+}
