@@ -1,0 +1,634 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: koku
+objects:
+# ====================================================
+#      koku ClowdApp
+# ====================================================
+- apiVersion: cloud.redhat.com/v1alpha1
+  kind: ClowdApp
+  metadata:
+    name: koku
+  spec:
+    # The name of the ClowdEnvironment providing the services
+    envName: ${ENV_NAME}
+
+    # Creates a database if local mode, or uses RDS in production
+    database:
+      # Must specify both a name and a major postgres version
+      dbResourceSize: small
+      name: ${DATABASE_NAME}
+      version: ${{DATABASE_VERSION}}
+
+    # Use Unleash server
+    featureFlags: true
+
+    # Redis
+    inMemoryDb: true
+
+    # Request kafka topics for your application here
+    kafkaTopics:
+    - topicName: platform.sources.event-stream
+    - topicName: platform.upload.announce
+    - topicName: platform.upload.validation
+    - topicName: platform.notifications.ingress
+    - topicName: hccm.ros.events
+    - topicName: platform.rhsm-subscriptions.service-instance-ingress
+
+    objectStore:
+    - ${S3_BUCKET_NAME}
+    - ${S3_ROS_BUCKET_NAME}
+    - ${S3_SUBS_BUCKET_NAME}
+
+    dependencies:
+    - ingress
+    - rbac
+    - sources-api
+
+    optionalDependencies: []
+
+    # IQE testing
+    testing:
+      iqePlugin: cost-management
+
+    # ====================================================
+    #      koku DB Migrations Job
+    # ====================================================
+    jobs:
+    - name: db-migrate-cji-${DBM_IMAGE_TAG}-${DBM_INVOCATION}
+      podSpec:
+        image: ${DBM_IMAGE}:${DBM_IMAGE_TAG}
+        resources:
+          limits:
+            cpu: ${CPU_LIMIT_KOKU_MIGRATIONS}
+            memory: ${MEMORY_LIMIT_KOKU_MIGRATIONS}
+          requests:
+            cpu: ${CPU_REQUEST_KOKU_MIGRATIONS}
+            memory: ${MEMORY_REQUEST_KOKU_MIGRATIONS}
+        args:
+        - /bin/bash
+        - -c
+        - $APP_ROOT/scripts/run_migrations.sh
+        env:
+        - name: CLOWDER_ENABLED
+          value: ${CLOWDER_ENABLED}
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              key: aws_access_key_id
+              name: koku-aws
+              optional: false
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              key: aws_secret_access_key
+              name: koku-aws
+              optional: false
+        - name: SCHEMA_SUFFIX
+          value: ${SCHEMA_SUFFIX}
+        - name: TRINO_S3A_OR_S3
+          value: ${TRINO_S3A_OR_S3}
+        - name: DEVELOPMENT
+          value: ${DEVELOPMENT}
+        - name: PROMETHEUS_MULTIPROC_DIR
+          value: ${PROMETHEUS_DIR}
+        - name: DBM_IMAGE
+          value: ${DBM_IMAGE}
+        - name: DBM_IMAGE_TAG
+          value: ${DBM_IMAGE_TAG}
+        - name: DBM_INVOCATION
+          value: ${DBM_INVOCATION}
+        - name: _MIGRATION_DIRECTIVE
+          value: ${_MIGRATION_DIRECTIVE}
+        - name: TENANT_MULTIPROCESSING_MAX_PROCESSES
+          value: ${TENANT_MULTIPROCESSING_MAX_PROCESSES}
+        - name: TENANT_MULTIPROCESSING_CHUNKS
+          value: ${TENANT_MULTIPROCESSING_CHUNKS}
+    # ====================================================
+    #      koku Management Command Job
+    # ====================================================
+    - name: management-command-cji-${MGMT_IMAGE_TAG}-${MGMT_INVOCATION}
+      podSpec:
+        image: ${MGMT_IMAGE}:${MGMT_IMAGE_TAG}
+        resources:
+          limits:
+            cpu: ${CPU_LIMIT_KOKU_MGMT}
+            memory: ${MEMORY_LIMIT_KOKU_MGMT}
+          requests:
+            cpu: ${CPU_REQUEST_KOKU_MGMT}
+            memory: ${MEMORY_REQUEST_KOKU_MGMT}
+        args:
+        - /bin/bash
+        - -c
+        - ${MGMT_COMMAND}
+        env:
+        - name: CLOWDER_ENABLED
+          value: ${CLOWDER_ENABLED}
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              key: aws_access_key_id
+              name: koku-aws
+              optional: false
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              key: aws_secret_access_key
+              name: koku-aws
+              optional: false
+        - name: SCHEMA_SUFFIX
+          value: ${SCHEMA_SUFFIX}
+        - name: TRINO_S3A_OR_S3
+          value: ${TRINO_S3A_OR_S3}
+        - name: DEVELOPMENT
+          value: ${DEVELOPMENT}
+        - name: MGMT_IMAGE
+          value: ${MGMT_IMAGE}
+        - name: MGMT_IMAGE_TAG
+          value: ${MGMT_IMAGE_TAG}
+        - name: TRINO_HOST
+          value: ${TRINO_HOST}
+        - name: TRINO_PORT
+          value: ${TRINO_PORT}
+
+    # The bulk of your App. This is where your running apps will live
+    deployments:
+    -
+
+# ====================================================
+#      koku DB Migrations CJI
+# ====================================================
+- apiVersion: cloud.redhat.com/v1alpha1
+  kind: ClowdJobInvocation
+  metadata:
+    name: db-migrate-cji-${DBM_IMAGE_TAG}-${DBM_INVOCATION}
+  spec:
+    appName: koku
+    jobs:
+      - db-migrate-cji-${DBM_IMAGE_TAG}-${DBM_INVOCATION}
+
+# ====================================================
+#      koku Management CJI
+# ====================================================
+- apiVersion: cloud.redhat.com/v1alpha1
+  kind: ClowdJobInvocation
+  metadata:
+    name: management-command-cji-${MGMT_IMAGE_TAG}-${MGMT_INVOCATION}
+  spec:
+    appName: koku
+    jobs:
+      - management-command-cji-${MGMT_IMAGE_TAG}-${MGMT_INVOCATION}
+
+- apiVersion: v1
+  kind: Secret # For ephemeral/local environment only
+  metadata:
+    name: koku-secret
+  stringData:
+    django-secret-key: "${SECRET_KEY}"
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: koku-api-nginx-conf
+  data:
+    nginx.conf: |-
+      worker_processes  1;
+      error_log  /dev/stderr warn;
+      pid        /run/nginx.pid;
+
+      events {
+        worker_connections  1024;
+      }
+      http {
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_proto" "$http_x_forwarded_for"';
+
+        access_log  /dev/stdout  main;
+
+        sendfile            on;
+        tcp_nopush          on;
+        tcp_nodelay         on;
+        keepalive_timeout   65;
+        server_tokens       off;
+
+        upstream koku-api-reads {
+          server koku-api-reads:8000;
+        }
+        upstream koku-api-writes {
+          server koku-api-writes:8000;
+        }
+        upstream ros-ocp-api {
+          server ${ROS_OCP_API}:8000;
+        }
+        map $request_method $upstream_location {
+                    GET     koku-api-reads;
+                    HEAD    koku-api-reads;
+                    POST    koku-api-writes;
+                    PUT     koku-api-writes;
+                    DELETE  koku-api-writes;
+                    default koku-api-writes;
+        }
+
+        server {
+          error_log  stderr;
+          listen 8000;
+          listen 9000;
+
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+          proxy_set_header Host $http_host;
+          proxy_redirect off;
+
+          client_max_body_size 500M;
+          client_header_buffer_size 46k;
+          location /healthz {
+              auth_basic          off;
+              allow               all;
+              return              200;
+          }
+          location /metrics {
+              auth_basic          off;
+              allow               all;
+              return              200;
+          }
+          location ^~/ {
+            proxy_pass http://$upstream_location;
+            proxy_read_timeout 600s;
+          }
+          location /api/cost-management/v1/recommendations/ {
+            proxy_pass http://ros-ocp-api;
+            proxy_read_timeout 600s;
+          }
+        }
+      }
+
+
+
+
+
+parameters:
+- name: ENV_NAME
+  required: true
+  value: koku-env
+- name: DATABASE_NAME
+  required: true
+  value: koku
+- name: DATABASE_VERSION
+  required: true
+  value: "16"
+- name: CLOWDER_ENABLED
+  required: true
+  value: "True"
+- name: ONPREM
+  description: toggles onprem data processing logic
+  value: "False"
+- description: Image tag
+  name: IMAGE_TAG
+  required: true
+  value: latest
+- description: Image
+  name: IMAGE
+  required: true
+  value: quay.io/redhat-services-prod/cost-mgmt-dev-tenant/koku
+- description: change this value to restart all pods
+  name: REDEPLOY_HASH_ALL
+  value: "000000"
+- name: SCHEMA_SUFFIX
+  description: DEVELOPMENT ONLY - used to prevent clashing Glue databases during ephemeral testing
+  value: ""
+- name: TRINO_S3A_OR_S3
+  value: "s3a"
+- name: S3_BUCKET_NAME
+  value: hccm-eph-s3
+- name: S3_ROS_BUCKET_NAME
+  value: hccm-ros-eph-s3
+- name: S3_SUBS_BUCKET_NAME
+  value: hccm-subs-eph-s3
+- name: GOOGLE_APPLICATION_CREDENTIALS
+  description: GCP Credentials Location
+  value: "/etc/gcp/gcp-credentials.json"
+- name: GLITCHTIP_SECRET_NAME
+  description: secret containing Glitchtip (or Sentry) credentials
+  value: koku-sentry
+- name: GLITCHTIP_KEY_NAME
+  value: dsn
+
+- description: DB Migrations Image Tag
+  name: DBM_IMAGE_TAG
+  required: true
+  value: latest
+- description: DB Migrations Image
+  name: DBM_IMAGE
+  required: true
+  value: quay.io/redhat-services-prod/cost-mgmt-dev-tenant/koku
+- description: DB Invocation Iterator
+  name: DBM_INVOCATION
+  required: true
+  value: "00"
+- description: DB Migrations Directive
+  name: _MIGRATION_DIRECTIVE
+  required: false
+  value: ""
+- displayName: Memory Request
+  name: MEMORY_REQUEST_KOKU_MIGRATIONS
+  required: true
+  value: 1Gi
+- displayName: Memory Limit
+  name: MEMORY_LIMIT_KOKU_MIGRATIONS
+  required: true
+  value: 2Gi
+- displayName: CPU Request
+  name: CPU_REQUEST_KOKU_MIGRATIONS
+  required: true
+  value: "2"
+- displayName: CPU Limit
+  name: CPU_LIMIT_KOKU_MIGRATIONS
+  required: true
+  value: "3"
+- name: TENANT_MULTIPROCESSING_MAX_PROCESSES
+  required: true
+  value: "2"
+- name: TENANT_MULTIPROCESSING_CHUNKS
+  required: True
+  value: "2"
+
+- description: Management Command Image Tag
+  name: MGMT_IMAGE_TAG
+  required: true
+  value: latest
+- description: Management Command Image
+  name: MGMT_IMAGE
+  required: true
+  value: quay.io/redhat-services-prod/cost-mgmt-dev-tenant/koku
+- description: Management Command Invocation Iterator
+  name: MGMT_INVOCATION
+  required: true
+  value: "00"
+- description: Management Command
+  name: MGMT_COMMAND
+  value: "echo 'No Command to Run'"
+- displayName: Memory Request
+  name: MEMORY_REQUEST_KOKU_MGMT
+  required: true
+  value: 20Mi
+- displayName: Memory Limit
+  name: MEMORY_LIMIT_KOKU_MGMT
+  required: true
+  value: 20Mi
+- displayName: CPU Request
+  name: CPU_REQUEST_KOKU_MGMT
+  required: true
+  value: "10m"
+- displayName: CPU Limit
+  name: CPU_LIMIT_KOKU_MGMT
+  required: true
+  value: "10m"
+
+- displayName: App domain
+  name: APP_DOMAIN
+  value: project-koku.com
+- displayName: API path prefix
+  name: API_PATH_PREFIX
+  required: true
+  value: /api/cost-management
+- displayName: Max support group by
+  name: MAX_GROUP_BY_OVERRIDE
+  value: "3"
+- displayName: Development
+  name: DEVELOPMENT
+  value: "False"
+- displayName: Gunicorn worker count
+  name: GUNICORN_WORKERS
+  value: "3"
+- displayName: Enable threads in Gunicorn
+  name: GUNICORN_THREADS
+  value: "True"
+- displayName: Celery log level
+  name: CELERY_LOG_LEVEL
+  value: INFO
+- displayName: Gunicorn log level
+  name: GUNICORN_LOG_LEVEL
+  value: INFO
+- displayName: Koku log level
+  name: KOKU_LOG_LEVEL
+  value: INFO
+- displayName: Unleash log level
+  name: UNLEASH_LOG_LEVEL
+  value: WARNING
+- displayName: Django log level
+  name: DJANGO_LOG_LEVEL
+  value: INFO
+- displayName: Django log formatter
+  name: DJANGO_LOG_FORMATTER
+  value: simple
+- displayName: Django log handlers
+  name: DJANGO_LOG_HANDLERS
+  value: console
+- displayName: Django log dir
+  name: DJANGO_LOG_DIRECTORY
+  required: false
+- displayName: Django logging file
+  name: DJANGO_LOG_FILE
+  required: false
+- description: Koku Sentry Env
+  displayName: Koku Sentry Env
+  name: KOKU_SENTRY_ENV
+  value: "development"
+- description: Enable Sentry
+  displayName: Enable Sentry
+  name: KOKU_ENABLE_SENTRY
+  value: "False"
+
+- description: How many CSV rows to process into a Parquet file
+  displayName: Parquet processing batch size
+  name: PARQUET_PROCESSING_BATCH_SIZE
+  required: true
+  value: "200000"
+- description: How many pandas columns to read from file
+  displayName: Pandas column batch size
+  name: PANDAS_COLUMN_BATCH_SIZE
+  required: true
+  value: "250"
+- description: Processing batch size
+  displayName: Processing batch size
+  name: REPORT_PROCESSING_BATCH_SIZE
+  required: false
+  value: "100000"
+- description: Number of days at a time we process Trino SQL
+  displayName: Trino date step
+  name: TRINO_DATE_STEP
+  required: true
+  value: "5"
+- description: Number of days to expand the data validation
+  displayName: Data validation
+  name: VALIDATION_RANGE
+  required: true
+  value: "5"
+
+- description: Flag to enable/disable caching
+  displayName: cached views
+  name: CACHED_VIEWS_DISABLED
+  value: "False"
+- description: How long to store a task in the worker cache
+  displayName: Worker cache timeout
+  name: WORKER_CACHE_TIMEOUT
+  value: "21600" # 6 hour default
+- description: How long to store an XL task in the worker cache
+  displayName: Worker cache XL timeout
+  name: WORKER_CACHE_LARGE_CUSTOMER_TIMEOUT
+  value: "43200" # 12 hour default
+- description: How many concurrent tasks a customer can have
+  displayName: Worker cache timeout
+  name: WORKER_CACHE_LARGE_CUSTOMER_CONCURRENT_TASKS
+  value: "2" # 2 tasks default
+
+- description: Timeout threshold for worker process to initialize
+  displayName: Worker Proc Alive Timeout
+  name: WORKER_PROC_ALIVE_TIMEOUT
+  value: "4"
+
+- description: Demo account JSON
+  displayName: Demo account JSON
+  name: DEMO_ACCOUNTS
+  value: ""
+- description: Auto Ingest Flag
+  displayName: AUTO_DATA_INGEST
+  name: AUTO_DATA_INGEST
+  value: "True"
+- name: QE_SCHEMA
+  value: ""
+
+- description: Report download schedule
+  displayName: Report download schedule
+  name: REPORT_DOWNLOAD_SCHEDULE
+  value: "0 * * * *"
+- description: Remove expired data on day
+  displayName: Remove expired data on day
+  name: REMOVE_EXPIRED_REPORT_DATA_ON_DAY
+  value: "1"
+- description: Remove expired data report utc time
+  displayName: Remove expired data report utc time
+  name: REMOVE_EXPIRED_REPORT_UTC_TIME
+  value: "00:00"
+- description: Vacuum data on day
+  displayName: Vacuum data on day
+  name: VACUUM_DATA_DAY_OF_WEEK
+  value: ""
+- description: Vacuum data utc time
+  displayName: Vacuum data utc time
+  name: VACUUM_DATA_UTC_TIME
+  value: "00:00"
+- displayName: Date overrider
+  name: DATE_OVERRIDE
+  required: false
+- displayName: Retain num months
+  name: RETAIN_NUM_MONTHS
+  value: "3"
+- displayName: Notification check period
+  name: NOTIFICATION_CHECK_TIME
+  value: "24"
+- displayName: Initial ingest num months
+  name: INITIAL_INGEST_NUM_MONTHS
+  value: "3"
+- displayName: Initial ingest override
+  name: INITIAL_INGEST_OVERRIDE
+  value: "False"
+- displayName: Timer between provider polling
+  name: POLLING_TIMER
+  value: "86400"
+- displayName: Polling count (divide total providers by this for dynamic batch size)
+  name: POLLING_COUNT
+  value: "21"
+- description: Minimum number of reports before provider classed as XL
+  displayName: Min report count for large providers
+  name: XL_REPORT_COUNT
+  value: "100"
+- displayName: Timer to prevent triggering tasks while still processing in days
+  name: PROCESSING_WAIT_TIMER
+  value: "3"
+- displayName: Timer to prevent triggering tasks while still processing in days
+  name: LARGE_PROCESSING_WAIT_TIMER
+  value: "7"
+- displayName: Enable Tags Limit
+  name: TAG_ENABLED_LIMIT
+  value: "200"
+- displayName: Delayed Resummary Time
+  name: DELAYED_TASK_TIME
+  value: "3600" # 1 hour
+- displayName: Delayed Resummary Polling Minutes
+  name: DELAYED_TASK_POLLING_MINUTES
+  value: "30"
+- displayName: ROS URL Expiration
+  name: ROS_URL_EXPIRATION
+  value: "172800"
+- displayName: Kafka connect
+  name: KAFKA_CONNECT
+  value: "True"
+
+- displayName: Rbac service path
+  name: RBAC_SERVICE_PATH
+  value: /api/rbac/v1/access/
+- displayName: Rbac cache ttl
+  name: RBAC_CACHE_TTL
+  value: "30"
+
+- displayName: Trino host
+  name: TRINO_HOST
+  value: "trino-coordinator"
+- displayName: Trino port
+  name: TRINO_PORT
+  value: "10000"
+
+- displayName: Prometheus Pushgateway
+  name: PROMETHEUS_PUSHGATEWAY
+  value: prometheus-pushgateway:9091
+
+- description: Source API Path prefix
+  name: SOURCES_API_PREFIX
+  value: /api/sources/v1.0
+- description: Sources PSK secret name
+  name: SOURCES_PSK_SECRET_NAME
+  value: "sources-psk"
+
+- displayName: Temporary directory
+  name: TMP_DIR
+  value: /tmp
+- displayName: Prometheus multiproc dir
+  name: PROMETHEUS_DIR
+  value: /tmp
+- description: Unleash cache directory
+  name: UNLEASH_CACHE_DIR
+  value: /tmp/unleash
+
+- description: Header used by liveness/readiness probes
+  name: SOURCES_PROBE_HEADER
+  value: eyJpZGVudGl0eSI6IHsiYWNjb3VudF9udW1iZXIiOiAiMTIzNDUiLCAib3JnX2lkIjogIjEyMzQ1In19Cg==
+
+- name: SECRET_KEY
+  displayName: Secret Key (Ephemeral)
+  required: true
+  from: "[a-f0-9]{20}"
+  generate: expression
+- description: Enhanced Org Admin
+  displayName: Enhanced Org Admin
+  name: ENHANCED_ORG_ADMIN
+  value: "False"
+- name: RBAC_CACHE_TIMEOUT
+  displayName: RBAC_CACHE_TIMEOUT
+  value: "300"
+- name: CACHE_TIMEOUT
+  displayName: Middleware Timeout
+  value: "3600"
+- description: Enabale Subscription Watch Debug
+  displayName: Enable SUBS Debug
+  name: ENABLE_SUBS_DEBUG
+  value: "False"
+- description: Disable ROS Kafka messages
+  name: DISABLE_ROS_MSG
+  value: "False"
+- description: Enable SUBS Provider Types for Processing
+  displayname: Enable SUBS Provider Types
+  name: ENABLE_SUBS_PROVIDER_TYPES
+  value: "AWS"

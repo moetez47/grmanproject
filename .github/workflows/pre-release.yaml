@@ -1,0 +1,60 @@
+name: Create Pre-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Release commit'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  pre-release:
+    name: Pre-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Determine minor version
+        id: tag-setter
+        run: |
+          DATE=$(date +"%Y.%m.%d")
+          PREV_RELEASE=$(git tag --list | tail -1)
+          PREV_DATE="${PREV_RELEASE%.*}"
+          MINOR_VERSION=0
+          case $PREV_DATE in
+            *"$DATE"*)
+              MINOR_VERSION=${PREV_RELEASE##*.}
+              MINOR_VERSION=$((MINOR_VERSION+1))
+              ;;
+            *)
+              MINOR_VERSION=0
+              ;;
+          esac
+          echo "TAG_VERSION=r.$DATE.$MINOR_VERSION" >> $GITHUB_ENV
+
+      - name: Set the release commit
+        run: echo "RELEASE_COMMIT=${{ github.event.inputs.commit }}" >> $GITHUB_ENV
+
+      - name: Create release body file
+        run: bash .github/scripts/get_description.sh
+
+      - name: Set release body
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
+        with:
+          bodyFile: release_body.md
+          commit: ${{ github.event.inputs.commit }}
+          prerelease: true
+          tag: ${{ env.TAG_VERSION }}
+          token: ${{ secrets.GITHUB_TOKEN }}

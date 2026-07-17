@@ -1,0 +1,254 @@
+name: CI
+
+on:
+  merge_group:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  sanity:
+    name: Sanity
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Run pre-commit checks
+        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+        env:
+          SETUPTOOLS_USE_DISTUTILS: stdlib
+
+      - name: Check clowdapp manifest
+        run: bash .github/scripts/check_clowdapp.sh
+
+  changed-files:
+    name: Detect changed files
+    runs-on: ubuntu-latest
+    outputs:
+      run_tests: ${{ steps.check-files-or-fork.outputs.run_tests }}
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: step-security/changed-files@2e07db73e5ccdb319b9a6c7766bd46d39d304bad # v47.0.5
+        with:
+          files: |
+            db_functions/**
+            koku/**
+            .github/postgres/**
+            .github/scripts/check_migrations.sh
+            .github/workflows/ci.yml
+            Pipfile.lock
+
+      - name: Check files or fork
+        id: check-files-or-fork
+        run: |
+          if [ "${{ steps.changed-files.outputs.any_modified }}" == "true" ] || [ "${{ github.event.pull_request.head.repo.full_name }}" != "project-koku/koku" ]; then
+            echo "run_tests=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Show changed files
+        run: |
+          echo "Changed files:"
+          for file in ${{ steps.changed-files.outputs.all_changed_and_modified_files }}; do
+            echo "  $file"
+          done
+
+  units:
+    name: Units - ${{ matrix.python-version }}
+    needs: changed-files
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        python-version:
+          - "3.11"
+    env:
+      COMPOSE_FILE: .github/postgres/docker-compose.yaml
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        if: needs.changed-files.outputs.run_tests == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Display build environment
+        if: needs.changed-files.outputs.run_tests == 'true'
+        run: printenv
+
+      - name: Start the postgres DB
+        if: needs.changed-files.outputs.run_tests == 'true'
+        run: docker compose up -d db
+
+      - name: Set up Python ${{ matrix.python-version }}
+        if: needs.changed-files.outputs.run_tests == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pipenv
+        if: needs.changed-files.outputs.run_tests == 'true'
+        run: sudo python3 -m pip install pipenv
+
+      - name: Cache dependencies
+        if: needs.changed-files.outputs.run_tests == 'true'
+        id: cache-dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pipenv
+            ~/.local/share/virtualenvs
+          key: ${{ runner.os }}-env-${{ matrix.python-version }}-${{ hashFiles('**/Pipfile.lock') }}
+
+      - name: Install dependencies
+        if: needs.changed-files.outputs.run_tests == 'true' && steps.cache-dependencies.outputs.cache-hit != 'true'
+        run: |
+          pipenv sync --dev --python ${{ matrix.python-version }}
+
+      - name: Check migrations
+        if: |
+          needs.changed-files.outputs.run_tests == 'true'
+          && !(contains(github.event.pull_request.labels.*.name, 'skip-migration-check'))
+        run: bash .github/scripts/check_migrations.sh
+        env:
+          DATABASE_SERVICE_NAME: POSTGRES_SQL
+          DATABASE_ENGINE: postgresql
+          DATABASE_NAME: postgres
+          DATABASE_USER: postgres
+          DATABASE_PASSWORD: postgres
+          POSTGRES_SQL_SERVICE_HOST: localhost
+          POSTGRES_SQL_SERVICE_PORT: ${{ job.services.postgres.ports[5432] }}
+          PROMETHEUS_MULTIPROC_DIR: /tmp
+
+      - name: Run unit tests
+        if: needs.changed-files.outputs.run_tests == 'true'
+        id: unit_tests_run
+        run: pipenv run coverage run ./koku/manage.py test --noinput --verbosity 2 ./koku/
+        env:
+          DATABASE_SERVICE_NAME: POSTGRES_SQL
+          DATABASE_ENGINE: postgresql
+          DATABASE_NAME: postgres
+          DATABASE_USER: postgres
+          DATABASE_PASSWORD: postgres
+          POSTGRES_SQL_SERVICE_HOST: localhost
+          POSTGRES_SQL_SERVICE_PORT: ${{ job.services.postgres.ports[5432] }}
+          HIVE_DATABASE_PASSWORD: hivedbpw
+          PROMETHEUS_MULTIPROC_DIR: /tmp
+          TRINO_DATE_STEP: 31
+          MIDDLEWARE_TIME_TO_LIVE: 0
+          ENHANCED_ORG_ADMIN: True
+
+      - name: Run ONPREM sources tests
+        if: needs.changed-files.outputs.run_tests == 'true'
+        run: pipenv run coverage run --append ./koku/manage.py test --noinput --verbosity 2 sources.test
+        env:
+          DATABASE_SERVICE_NAME: POSTGRES_SQL
+          DATABASE_ENGINE: postgresql
+          DATABASE_NAME: postgres
+          DATABASE_USER: postgres
+          DATABASE_PASSWORD: postgres
+          POSTGRES_SQL_SERVICE_HOST: localhost
+          POSTGRES_SQL_SERVICE_PORT: ${{ job.services.postgres.ports[5432] }}
+          PROMETHEUS_MULTIPROC_DIR: /tmp
+          MIDDLEWARE_TIME_TO_LIVE: 0
+          ENHANCED_ORG_ADMIN: True
+          ONPREM: True
+
+      - name: Show test status
+        if: needs.changed-files.outputs.run_tests == 'true'
+        id: show_test_status
+        run: echo "Unit tests and migration check were '${{ steps.unit_tests_run.outcome }}'"
+
+      - name: Convert coverage report to XML
+        if: steps.unit_tests_run.outcome == 'success'
+        run: pipenv run coverage xml
+
+      - name: Upload test coverage file
+        if: steps.unit_tests_run.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage.xml
+          overwrite: true
+
+  coverage:
+    name: Coverage
+    needs: [changed-files, units]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      statuses: write
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        # this checkout is required for the coverage report. If we don't do this, then
+        # the uploaded report is invalid and codecov doesn't know how to process it.
+        if: needs.changed-files.outputs.run_tests == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage result from units
+        if: needs.changed-files.outputs.run_tests == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage
+
+      - name: Upload coverage to Codecov
+        if: needs.changed-files.outputs.run_tests == 'true'
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: Python-${{ matrix.python-version}}
+          fail_ci_if_error: true
+          plugins: noop
+
+      - name: Set Codecov job status on skipped tests
+        if: needs.changed-files.outputs.run_tests != 'true'
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: |
+          gh api "/repos/project-koku/koku/statuses/${{ github.event.pull_request.head.sha }}" -f description="codecov skipped because unit tests were not required" -f context="codecov/patch" -f state="success"
+          gh api "/repos/project-koku/koku/statuses/${{ github.event.pull_request.head.sha }}" -f description="codecov skipped because unit tests were not required" -f context="codecov/project" -f state="success"

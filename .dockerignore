@@ -1,0 +1,24 @@
+# Ignore everything
+**
+
+# ... except for dependencies and source
+!Pipfile
+!Pipfile.lock
+!koku/
+!docs/specs/
+!db_functions/
+!licenses/
+!scripts/
+
+# keep the test files out of the final image
+**/test/
+**/test_*
+**/conftest.py
+**/*_test.py
+**/koku_test_runner.py
+**/__pycache__
+**/*.log
+
+# remove any static files
+koku/static/**
+!koku/static/README
